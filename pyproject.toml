@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "signal-foundry"
+version = "0.1.0"
+description = "Audit local business sites for schema and AI/search visibility readiness."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "beautifulsoup4>=4.12.3,<5",
+  "requests>=2.32.3,<3",
+]
+
+[project.scripts]
+signal-foundry = "signal_foundry.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["signal_foundry*"]
