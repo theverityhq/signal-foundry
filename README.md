@@ -10,7 +10,7 @@ The MVP audits a CSV of business websites and reports:
 - which high-value signals appear missing
 - a rough readiness score
 - a recommended schema template to propose in a sales conversation
-- a browsable HTML dashboard for prospect review
+- a browsable HTML dashboard for prospect review, prioritization, and filtering
 
 ## Why this exists
 
@@ -77,6 +77,7 @@ CSV columns:
 - lightweight page discovery: homepage, about, contact, services, menu, products
 - heuristic scoring
 - CSV, JSON, Markdown, and HTML outputs
+- sales-oriented HTML view with lead-fit ranking, tags, and best-target spotlighting
 
 ## Next steps
 

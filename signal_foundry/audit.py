@@ -36,6 +36,8 @@ LOCAL_TYPES = {
 }
 
 DETAIL_TYPES = {"Service", "Product", "Offer", "Menu", "MenuItem"}
+HIGH_VALUE_CATEGORIES = {"restaurant", "dentist", "autorepair", "optometrist"}
+MEDIUM_VALUE_CATEGORIES = {"barbershop", "landscaper"}
 
 
 def load_businesses(input_csv: Path) -> list[Business]:
@@ -427,8 +429,10 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
     reachable = sum(1 for result in results if result.status == "ok")
     unreachable = sum(1 for result in results if result.status == "unreachable")
     average_score = round(sum(result.score for result in results) / total) if total else 0
-
-    cards = "\n".join(_render_result_card(result) for result in results)
+    ranked_results = sorted(results, key=_lead_sort_key, reverse=True)
+    tier_one = sum(1 for result in ranked_results if _lead_priority_tier(result) == "Tier 1")
+    cards = "\n".join(_render_result_card(result) for result in ranked_results)
+    spotlight = "\n".join(_render_spotlight_item(result) for result in ranked_results[:5])
     html_document = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -522,7 +526,7 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
     }}
     .toolbar {{
       display: grid;
-      grid-template-columns: 1.7fr repeat(3, minmax(0, 1fr));
+      grid-template-columns: 1.7fr repeat(4, minmax(0, 1fr));
       gap: 12px;
       margin: 22px 0 18px;
     }}
@@ -553,6 +557,43 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
       font: 600 13px/1.4 "Avenir Next", "Trebuchet MS", sans-serif;
       letter-spacing: 0.04em;
       text-transform: uppercase;
+    }}
+    .spotlight {{
+      margin: 18px 0 16px;
+      padding: 18px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: rgba(255, 253, 248, 0.88);
+      box-shadow: 0 12px 28px rgba(61, 39, 14, 0.06);
+    }}
+    .spotlight-title {{
+      margin: 0 0 12px;
+      color: var(--muted);
+      font: 600 12px/1.4 "Avenir Next", "Trebuchet MS", sans-serif;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }}
+    .spotlight-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 12px;
+    }}
+    .spotlight-item {{
+      padding: 14px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, #fff9ef, #f8eedf);
+      border: 1px solid rgba(29, 39, 51, 0.08);
+    }}
+    .spotlight-item strong {{
+      display: block;
+      margin-bottom: 6px;
+      font-size: 1rem;
+      line-height: 1.2;
+    }}
+    .spotlight-item span {{
+      display: block;
+      color: var(--muted);
+      font: 500 13px/1.45 "Avenir Next", "Trebuchet MS", sans-serif;
     }}
     .grid {{
       display: grid;
@@ -736,6 +777,7 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
         <div class="stat"><span class="stat-label">Reachable</span><span class="stat-value">{reachable}</span></div>
         <div class="stat"><span class="stat-label">Unreachable</span><span class="stat-value">{unreachable}</span></div>
         <div class="stat"><span class="stat-label">Avg Score</span><span class="stat-value">{average_score}</span></div>
+        <div class="stat"><span class="stat-label">Tier 1 Leads</span><span class="stat-value">{tier_one}</span></div>
       </div>
     </section>
 
@@ -765,6 +807,22 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
           <option value="no_website">No website</option>
         </select>
       </div>
+      <div class="control">
+        <label for="priority-filter">Priority</label>
+        <select id="priority-filter">
+          <option value="">All tiers</option>
+          <option value="Tier 1">Tier 1</option>
+          <option value="Tier 2">Tier 2</option>
+          <option value="Tier 3">Tier 3</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="spotlight">
+      <p class="spotlight-title">Best Targets First</p>
+      <div class="spotlight-grid">
+        {spotlight}
+      </div>
     </section>
 
     <div id="results-meta" class="results-meta"></div>
@@ -778,6 +836,7 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
     const cityFilter = document.getElementById('city-filter');
     const categoryFilter = document.getElementById('category-filter');
     const statusFilter = document.getElementById('status-filter');
+    const priorityFilter = document.getElementById('priority-filter');
     const search = document.getElementById('search');
     const resultsMeta = document.getElementById('results-meta');
     const empty = document.getElementById('empty');
@@ -796,6 +855,7 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
       const city = cityFilter.value.toLowerCase();
       const category = categoryFilter.value.toLowerCase();
       const status = statusFilter.value.toLowerCase();
+      const priority = priorityFilter.value.toLowerCase();
       const query = search.value.trim().toLowerCase();
       let visible = 0;
 
@@ -803,9 +863,10 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
         const matchesCity = !city || card.dataset.city.toLowerCase() === city;
         const matchesCategory = !category || card.dataset.category.toLowerCase() === category;
         const matchesStatus = !status || card.dataset.status.toLowerCase() === status;
+        const matchesPriority = !priority || card.dataset.priority.toLowerCase() === priority;
         const haystack = card.dataset.search.toLowerCase();
         const matchesQuery = !query || haystack.includes(query);
-        const show = matchesCity && matchesCategory && matchesStatus && matchesQuery;
+        const show = matchesCity && matchesCategory && matchesStatus && matchesPriority && matchesQuery;
         card.style.display = show ? '' : 'none';
         if (show) visible += 1;
       }}
@@ -816,7 +877,7 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
 
     fillSelect(cityFilter, 'city');
     fillSelect(categoryFilter, 'category');
-    for (const element of [cityFilter, categoryFilter, statusFilter, search]) {{
+    for (const element of [cityFilter, categoryFilter, statusFilter, priorityFilter, search]) {{
       element.addEventListener('input', applyFilters);
       element.addEventListener('change', applyFilters);
     }}
@@ -829,6 +890,9 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
 
 
 def _render_result_card(result: AuditResult) -> str:
+    priority_tier = _lead_priority_tier(result)
+    lead_fit = _lead_fit_score(result)
+    lead_tags = _lead_tags(result)
     search_text = " ".join(
         part
         for part in [
@@ -841,6 +905,8 @@ def _render_result_card(result: AuditResult) -> str:
             result.opportunity_summary,
             " ".join(result.missing_fields),
             " ".join(result.schema_types_found),
+            " ".join(lead_tags),
+            priority_tier,
         ]
         if part
     )
@@ -848,6 +914,7 @@ def _render_result_card(result: AuditResult) -> str:
     missing_pills = _render_pills(result.missing_fields, fallback="No missing fields recorded", muted=True)
     pages_pills = _render_pills(result.pages_scanned, fallback="No pages scanned", muted=True)
     notes_pills = _render_pills(result.notes, fallback="No notes", muted=True)
+    tag_pills = _render_pills(lead_tags, fallback="No lead tags")
     recommended_jsonld = html.escape(result.recommended_jsonld or "No JSON-LD recommendation was generated.")
     website = (
         f'<a href="{html.escape(result.website)}" target="_blank" rel="noreferrer">{html.escape(result.website)}</a>'
@@ -859,7 +926,7 @@ def _render_result_card(result: AuditResult) -> str:
     city = html.escape(result.city or "Unknown")
     status_label = result.status.replace("_", " ")
 
-    return f"""<article class="card" data-city="{html.escape(result.city)}" data-category="{html.escape(result.category)}" data-status="{html.escape(result.status)}" data-search="{html.escape(search_text)}">
+    return f"""<article class="card" data-city="{html.escape(result.city)}" data-category="{html.escape(result.category)}" data-status="{html.escape(result.status)}" data-priority="{html.escape(priority_tier)}" data-search="{html.escape(search_text)}">
   <div class="card-top">
     <div>
       <h2>{html.escape(result.business_name)}</h2>
@@ -867,11 +934,12 @@ def _render_result_card(result: AuditResult) -> str:
         <span class="chip">{html.escape(result.category)}</span>
         <span class="chip">{city}</span>
         <span class="chip status-{html.escape(result.status)}">{html.escape(status_label)}</span>
+        <span class="chip">{html.escape(priority_tier)}</span>
       </div>
     </div>
     <div class="score">
-      <span class="score-value">{result.score}</span>
-      <span class="score-label">Score</span>
+      <span class="score-value">{lead_fit}</span>
+      <span class="score-label">Lead Fit</span>
     </div>
   </div>
   <div class="details">
@@ -888,11 +956,19 @@ def _render_result_card(result: AuditResult) -> str:
       <div class="detail-value">{address}</div>
     </div>
     <div class="detail">
+      <span class="detail-label">Audit Score</span>
+      <div class="detail-value">{result.score}</div>
+    </div>
+    <div class="detail">
       <span class="detail-label">Recommended Type</span>
       <div class="detail-value">{html.escape(result.recommended_type or 'None')}</div>
     </div>
   </div>
   <div class="summary">{html.escape(result.opportunity_summary or 'No summary available.')}</div>
+  <div>
+    <span class="detail-label">Lead Tags</span>
+    <div class="list-block">{tag_pills}</div>
+  </div>
   <div>
     <span class="detail-label">Schema Types</span>
     <div class="list-block">{schema_pills}</div>
@@ -922,3 +998,98 @@ def _render_pills(values: list[str], *, fallback: str, muted: bool = False) -> s
         return f'<span class="{class_name}">{html.escape(fallback)}</span>'
     class_name = "pill pill-muted" if muted else "pill"
     return "".join(f'<span class="{class_name}">{html.escape(value)}</span>' for value in values)
+
+
+def _render_spotlight_item(result: AuditResult) -> str:
+    tier = _lead_priority_tier(result)
+    fit = _lead_fit_score(result)
+    reason = ", ".join(_lead_tags(result)[:2]) or "Prospect fit"
+    return (
+        f'<div class="spotlight-item"><strong>{html.escape(result.business_name)}</strong>'
+        f'<span>{html.escape(result.category)} in {html.escape(result.city or "Unknown")}</span>'
+        f'<span>{html.escape(tier)} | Lead fit {fit}</span>'
+        f'<span>{html.escape(reason)}</span></div>'
+    )
+
+
+def _lead_sort_key(result: AuditResult) -> tuple[int, int, str]:
+    return (_lead_fit_score(result), result.score, result.business_name.lower())
+
+
+def _lead_priority_tier(result: AuditResult) -> str:
+    score = _lead_fit_score(result)
+    if score >= 75:
+        return "Tier 1"
+    if score >= 55:
+        return "Tier 2"
+    return "Tier 3"
+
+
+def _lead_fit_score(result: AuditResult) -> int:
+    category = result.category.lower().replace(" ", "")
+    score = 0
+
+    if result.website:
+        score += 20
+    if result.phone:
+        score += 20
+    if result.address:
+        score += 15
+    if result.city:
+        score += 5
+
+    if category in HIGH_VALUE_CATEGORIES:
+        score += 20
+    elif category in MEDIUM_VALUE_CATEGORIES:
+        score += 14
+    else:
+        score += 10
+
+    if result.status == "ok":
+        score += min(20, max(0, 70 - result.score) // 2)
+    elif result.status == "unreachable":
+        score += 10
+    elif result.status == "no_website":
+        score -= 10
+
+    if "structured_data" in result.missing_fields or "local_business_schema" in result.missing_fields:
+        score += 10
+    elif result.status == "unreachable":
+        score += 8
+
+    return max(0, min(100, score))
+
+
+def _lead_tags(result: AuditResult) -> list[str]:
+    tags: list[str] = []
+    category = result.category.lower().replace(" ", "")
+
+    if category in HIGH_VALUE_CATEGORIES:
+        tags.append("High-value vertical")
+    elif category in MEDIUM_VALUE_CATEGORIES:
+        tags.append("Steady local category")
+
+    if result.phone:
+        tags.append("Phone listed")
+    if result.address:
+        tags.append("Address listed")
+    if result.website:
+        tags.append("Website present")
+
+    if result.status == "ok":
+        if result.score < 50:
+            tags.append("Strong fix opportunity")
+        else:
+            tags.append("Reachable now")
+    elif result.status == "unreachable":
+        tags.append("Needs live crawl")
+    elif result.status == "no_website":
+        tags.append("No website")
+
+    if "structured_data" in result.missing_fields or result.status == "unreachable":
+        tags.append("Schema audit candidate")
+
+    if not result.phone and not result.address:
+        tags.append("Needs contact enrichment")
+
+    return tags[:5]
