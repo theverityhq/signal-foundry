@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import json
 import logging
 from dataclasses import asdict
@@ -269,6 +270,8 @@ def audit_businesses(
                     business_name=business.name,
                     category=business.category,
                     website="",
+                    phone=business.phone,
+                    address=business.address,
                     city=business.city,
                     status="no_website",
                     score=0,
@@ -305,6 +308,8 @@ def audit_businesses(
                     business_name=business.name,
                     category=business.category,
                     website=business.website,
+                    phone=business.phone,
+                    address=business.address,
                     city=business.city,
                     status="unreachable",
                     score=0,
@@ -322,13 +327,15 @@ def audit_businesses(
             notes.append("No JSON-LD detected on scanned pages.")
 
         results.append(
-            AuditResult(
-                business_name=business.name,
-                category=business.category,
-                website=business.website,
-                city=business.city,
-                status="ok",
-                score=score,
+                AuditResult(
+                    business_name=business.name,
+                    category=business.category,
+                    website=business.website,
+                    phone=business.phone,
+                    address=business.address,
+                    city=business.city,
+                    status="ok",
+                    score=score,
                 schema_types_found=sorted(schema_types),
                 missing_fields=missing_fields,
                 opportunity_summary=summary,
@@ -347,6 +354,7 @@ def write_reports(results: list[AuditResult], output_dir: Path) -> None:
     write_json_report(results, output_dir / "audit-report.json")
     write_csv_report(results, output_dir / "audit-report.csv")
     write_markdown_report(results, output_dir / "audit-report.md")
+    write_html_report(results, output_dir / "audit-report.html")
 
 
 def write_json_report(results: list[AuditResult], path: Path) -> None:
@@ -359,6 +367,8 @@ def write_csv_report(results: list[AuditResult], path: Path) -> None:
         "business_name",
         "category",
         "website",
+        "phone",
+        "address",
         "city",
         "status",
         "score",
@@ -378,6 +388,8 @@ def write_csv_report(results: list[AuditResult], path: Path) -> None:
                     "business_name": result.business_name,
                     "category": result.category,
                     "website": result.website,
+                    "phone": result.phone,
+                    "address": result.address,
                     "city": result.city,
                     "status": result.status,
                     "score": result.score,
@@ -397,6 +409,8 @@ def write_markdown_report(results: list[AuditResult], path: Path) -> None:
         lines.append(f"## {result.business_name}")
         lines.append(f"- Category: {result.category}")
         lines.append(f"- Website: {result.website}")
+        lines.append(f"- Phone: {result.phone or 'None'}")
+        lines.append(f"- Address: {result.address or 'None'}")
         lines.append(f"- City: {result.city}")
         lines.append(f"- Status: {result.status}")
         lines.append(f"- Score: {result.score}")
@@ -406,3 +420,505 @@ def write_markdown_report(results: list[AuditResult], path: Path) -> None:
         lines.append(f"- Recommended type: {result.recommended_type or 'None'}")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_html_report(results: list[AuditResult], path: Path) -> None:
+    total = len(results)
+    reachable = sum(1 for result in results if result.status == "ok")
+    unreachable = sum(1 for result in results if result.status == "unreachable")
+    average_score = round(sum(result.score for result in results) / total) if total else 0
+
+    cards = "\n".join(_render_result_card(result) for result in results)
+    html_document = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signal Foundry Audit Report</title>
+  <style>
+    :root {{
+      --bg: #f5efe4;
+      --panel: rgba(255, 251, 245, 0.86);
+      --panel-strong: #fffdf8;
+      --ink: #1d2733;
+      --muted: #5e6b78;
+      --line: rgba(29, 39, 51, 0.12);
+      --accent: #0f766e;
+      --accent-soft: rgba(15, 118, 110, 0.12);
+      --warn: #b45309;
+      --warn-soft: rgba(180, 83, 9, 0.12);
+      --bad: #b91c1c;
+      --bad-soft: rgba(185, 28, 28, 0.12);
+      --shadow: 0 22px 50px rgba(61, 39, 14, 0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(191, 219, 254, 0.45), transparent 32%),
+        radial-gradient(circle at top right, rgba(251, 191, 36, 0.26), transparent 28%),
+        linear-gradient(180deg, #fbf7ef 0%, var(--bg) 100%);
+      font-family: Georgia, "Avenir Next", serif;
+    }}
+    a {{
+      color: inherit;
+    }}
+    .shell {{
+      width: min(1200px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 32px 0 56px;
+    }}
+    .hero {{
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: linear-gradient(140deg, rgba(255,255,255,0.9), rgba(247, 240, 228, 0.88));
+      box-shadow: var(--shadow);
+    }}
+    .eyebrow {{
+      margin: 0 0 8px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      font: 600 12px/1.4 "Avenir Next", "Trebuchet MS", sans-serif;
+      color: var(--muted);
+    }}
+    h1 {{
+      margin: 0;
+      font-size: clamp(2.4rem, 5vw, 4.5rem);
+      line-height: 0.94;
+    }}
+    .subtitle {{
+      width: min(760px, 100%);
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 1.02rem;
+      line-height: 1.6;
+    }}
+    .stats {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 14px;
+      margin-top: 22px;
+    }}
+    .stat {{
+      padding: 16px 18px;
+      border-radius: 20px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      backdrop-filter: blur(8px);
+    }}
+    .stat-label {{
+      display: block;
+      margin-bottom: 6px;
+      font: 600 12px/1.4 "Avenir Next", "Trebuchet MS", sans-serif;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }}
+    .stat-value {{
+      font-size: 2rem;
+      line-height: 1;
+    }}
+    .toolbar {{
+      display: grid;
+      grid-template-columns: 1.7fr repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 22px 0 18px;
+    }}
+    .control {{
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }}
+    .control label {{
+      font: 600 12px/1.4 "Avenir Next", "Trebuchet MS", sans-serif;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }}
+    .control input,
+    .control select {{
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.82);
+      color: var(--ink);
+      font: 500 15px/1.3 "Avenir Next", "Trebuchet MS", sans-serif;
+    }}
+    .results-meta {{
+      margin: 10px 0 18px;
+      color: var(--muted);
+      font: 600 13px/1.4 "Avenir Next", "Trebuchet MS", sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+      gap: 16px;
+    }}
+    .card {{
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 18px;
+      border-radius: 24px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      box-shadow: 0 10px 26px rgba(61, 39, 14, 0.08);
+    }}
+    .card-top {{
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }}
+    .card h2 {{
+      margin: 0;
+      font-size: 1.35rem;
+      line-height: 1.05;
+    }}
+    .meta {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }}
+    .chip {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: #f1ebe1;
+      color: var(--muted);
+      font: 600 12px/1 "Avenir Next", "Trebuchet MS", sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }}
+    .status-ok {{ background: var(--accent-soft); color: var(--accent); }}
+    .status-unreachable,
+    .status-no_website {{ background: var(--bad-soft); color: var(--bad); }}
+    .score {{
+      min-width: 70px;
+      padding: 12px 10px;
+      border-radius: 18px;
+      text-align: center;
+      background: linear-gradient(180deg, #fff8eb, #f4ead7);
+      border: 1px solid var(--line);
+    }}
+    .score-value {{
+      display: block;
+      font-size: 1.6rem;
+      line-height: 1;
+    }}
+    .score-label {{
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font: 600 11px/1.2 "Avenir Next", "Trebuchet MS", sans-serif;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }}
+    .details {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }}
+    .detail {{
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: #faf6ee;
+      border: 1px solid rgba(29, 39, 51, 0.08);
+    }}
+    .detail-label {{
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font: 600 11px/1.3 "Avenir Next", "Trebuchet MS", sans-serif;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }}
+    .detail-value {{
+      font-size: 0.97rem;
+      line-height: 1.5;
+      word-break: break-word;
+    }}
+    .list-block {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }}
+    .pill {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: #eef6f5;
+      color: #165e57;
+      font: 600 12px/1.1 "Avenir Next", "Trebuchet MS", sans-serif;
+    }}
+    .pill-muted {{
+      background: #f4ede2;
+      color: #75634d;
+    }}
+    .summary {{
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: #f8f2e7;
+      border-left: 4px solid #c0843d;
+      line-height: 1.6;
+    }}
+    details {{
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #fffaf1;
+      overflow: hidden;
+    }}
+    summary {{
+      cursor: pointer;
+      list-style: none;
+      padding: 12px 14px;
+      font: 600 13px/1.4 "Avenir Next", "Trebuchet MS", sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }}
+    details pre {{
+      margin: 0;
+      padding: 0 14px 14px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 500 12px/1.6 "SFMono-Regular", Consolas, monospace;
+      color: #20303a;
+    }}
+    .empty {{
+      display: none;
+      margin-top: 18px;
+      padding: 20px;
+      border-radius: 20px;
+      border: 1px dashed var(--line);
+      color: var(--muted);
+      text-align: center;
+      background: rgba(255,255,255,0.5);
+    }}
+    @media (max-width: 900px) {{
+      .toolbar {{
+        grid-template-columns: 1fr;
+      }}
+    }}
+    @media (max-width: 640px) {{
+      .shell {{
+        width: min(100vw - 20px, 100%);
+        padding-top: 18px;
+      }}
+      .hero {{
+        padding: 22px 18px;
+        border-radius: 22px;
+      }}
+      .details {{
+        grid-template-columns: 1fr;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <p class="eyebrow">Signal Foundry Prospect View</p>
+      <h1>14589 Lead List</h1>
+      <p class="subtitle">A clean local view of the current prospect set, including contact details, city/category filters, site status, score, and the schema recommendation generated for each business.</p>
+      <div class="stats">
+        <div class="stat"><span class="stat-label">Businesses</span><span class="stat-value">{total}</span></div>
+        <div class="stat"><span class="stat-label">Reachable</span><span class="stat-value">{reachable}</span></div>
+        <div class="stat"><span class="stat-label">Unreachable</span><span class="stat-value">{unreachable}</span></div>
+        <div class="stat"><span class="stat-label">Avg Score</span><span class="stat-value">{average_score}</span></div>
+      </div>
+    </section>
+
+    <section class="toolbar">
+      <div class="control">
+        <label for="search">Search</label>
+        <input id="search" type="search" placeholder="Business, city, category, phone, address">
+      </div>
+      <div class="control">
+        <label for="city-filter">City</label>
+        <select id="city-filter">
+          <option value="">All cities</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="category-filter">Category</label>
+        <select id="category-filter">
+          <option value="">All categories</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="status-filter">Status</label>
+        <select id="status-filter">
+          <option value="">All statuses</option>
+          <option value="ok">Reachable</option>
+          <option value="unreachable">Unreachable</option>
+          <option value="no_website">No website</option>
+        </select>
+      </div>
+    </section>
+
+    <div id="results-meta" class="results-meta"></div>
+    <section id="card-grid" class="grid">
+      {cards}
+    </section>
+    <div id="empty" class="empty">No businesses match the current filters.</div>
+  </div>
+  <script>
+    const cards = [...document.querySelectorAll('.card')];
+    const cityFilter = document.getElementById('city-filter');
+    const categoryFilter = document.getElementById('category-filter');
+    const statusFilter = document.getElementById('status-filter');
+    const search = document.getElementById('search');
+    const resultsMeta = document.getElementById('results-meta');
+    const empty = document.getElementById('empty');
+
+    function fillSelect(select, attribute) {{
+      const values = [...new Set(cards.map(card => card.dataset[attribute]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      for (const value of values) {{
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+      }}
+    }}
+
+    function applyFilters() {{
+      const city = cityFilter.value.toLowerCase();
+      const category = categoryFilter.value.toLowerCase();
+      const status = statusFilter.value.toLowerCase();
+      const query = search.value.trim().toLowerCase();
+      let visible = 0;
+
+      for (const card of cards) {{
+        const matchesCity = !city || card.dataset.city.toLowerCase() === city;
+        const matchesCategory = !category || card.dataset.category.toLowerCase() === category;
+        const matchesStatus = !status || card.dataset.status.toLowerCase() === status;
+        const haystack = card.dataset.search.toLowerCase();
+        const matchesQuery = !query || haystack.includes(query);
+        const show = matchesCity && matchesCategory && matchesStatus && matchesQuery;
+        card.style.display = show ? '' : 'none';
+        if (show) visible += 1;
+      }}
+
+      resultsMeta.textContent = `${{visible}} of {total} businesses shown`;
+      empty.style.display = visible ? 'none' : 'block';
+    }}
+
+    fillSelect(cityFilter, 'city');
+    fillSelect(categoryFilter, 'category');
+    for (const element of [cityFilter, categoryFilter, statusFilter, search]) {{
+      element.addEventListener('input', applyFilters);
+      element.addEventListener('change', applyFilters);
+    }}
+    applyFilters();
+  </script>
+</body>
+</html>
+"""
+    path.write_text(html_document, encoding="utf-8")
+
+
+def _render_result_card(result: AuditResult) -> str:
+    search_text = " ".join(
+        part
+        for part in [
+            result.business_name,
+            result.category,
+            result.website,
+            result.phone,
+            result.address,
+            result.city,
+            result.opportunity_summary,
+            " ".join(result.missing_fields),
+            " ".join(result.schema_types_found),
+        ]
+        if part
+    )
+    schema_pills = _render_pills(result.schema_types_found, fallback="No schema found")
+    missing_pills = _render_pills(result.missing_fields, fallback="No missing fields recorded", muted=True)
+    pages_pills = _render_pills(result.pages_scanned, fallback="No pages scanned", muted=True)
+    notes_pills = _render_pills(result.notes, fallback="No notes", muted=True)
+    recommended_jsonld = html.escape(result.recommended_jsonld or "No JSON-LD recommendation was generated.")
+    website = (
+        f'<a href="{html.escape(result.website)}" target="_blank" rel="noreferrer">{html.escape(result.website)}</a>'
+        if result.website
+        else "None"
+    )
+    phone = html.escape(result.phone or "None")
+    address = html.escape(result.address or "None")
+    city = html.escape(result.city or "Unknown")
+    status_label = result.status.replace("_", " ")
+
+    return f"""<article class="card" data-city="{html.escape(result.city)}" data-category="{html.escape(result.category)}" data-status="{html.escape(result.status)}" data-search="{html.escape(search_text)}">
+  <div class="card-top">
+    <div>
+      <h2>{html.escape(result.business_name)}</h2>
+      <div class="meta">
+        <span class="chip">{html.escape(result.category)}</span>
+        <span class="chip">{city}</span>
+        <span class="chip status-{html.escape(result.status)}">{html.escape(status_label)}</span>
+      </div>
+    </div>
+    <div class="score">
+      <span class="score-value">{result.score}</span>
+      <span class="score-label">Score</span>
+    </div>
+  </div>
+  <div class="details">
+    <div class="detail">
+      <span class="detail-label">Website</span>
+      <div class="detail-value">{website}</div>
+    </div>
+    <div class="detail">
+      <span class="detail-label">Phone</span>
+      <div class="detail-value">{phone}</div>
+    </div>
+    <div class="detail">
+      <span class="detail-label">Address</span>
+      <div class="detail-value">{address}</div>
+    </div>
+    <div class="detail">
+      <span class="detail-label">Recommended Type</span>
+      <div class="detail-value">{html.escape(result.recommended_type or 'None')}</div>
+    </div>
+  </div>
+  <div class="summary">{html.escape(result.opportunity_summary or 'No summary available.')}</div>
+  <div>
+    <span class="detail-label">Schema Types</span>
+    <div class="list-block">{schema_pills}</div>
+  </div>
+  <div>
+    <span class="detail-label">Missing Signals</span>
+    <div class="list-block">{missing_pills}</div>
+  </div>
+  <div>
+    <span class="detail-label">Pages Scanned</span>
+    <div class="list-block">{pages_pills}</div>
+  </div>
+  <div>
+    <span class="detail-label">Notes</span>
+    <div class="list-block">{notes_pills}</div>
+  </div>
+  <details>
+    <summary>Recommended JSON-LD</summary>
+    <pre>{recommended_jsonld}</pre>
+  </details>
+</article>"""
+
+
+def _render_pills(values: list[str], *, fallback: str, muted: bool = False) -> str:
+    if not values:
+        class_name = "pill pill-muted" if muted else "pill"
+        return f'<span class="{class_name}">{html.escape(fallback)}</span>'
+    class_name = "pill pill-muted" if muted else "pill"
+    return "".join(f'<span class="{class_name}">{html.escape(value)}</span>' for value in values)

@@ -10,6 +10,7 @@ The MVP audits a CSV of business websites and reports:
 - which high-value signals appear missing
 - a rough readiness score
 - a recommended schema template to propose in a sales conversation
+- a browsable HTML dashboard for prospect review
 
 ## Why this exists
 
@@ -51,6 +52,13 @@ python3 -m signal_foundry \
   --output-dir output
 ```
 
+This writes:
+
+- `output/audit-report.csv`
+- `output/audit-report.json`
+- `output/audit-report.md`
+- `output/audit-report.html`
+
 ## Input format
 
 CSV columns:
@@ -68,7 +76,7 @@ CSV columns:
 - JSON-LD extraction only
 - lightweight page discovery: homepage, about, contact, services, menu, products
 - heuristic scoring
-- CSV, JSON, and Markdown outputs
+- CSV, JSON, Markdown, and HTML outputs
 
 ## Next steps
 

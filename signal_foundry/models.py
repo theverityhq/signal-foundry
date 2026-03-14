@@ -28,6 +28,8 @@ class AuditResult:
     business_name: str
     category: str
     website: str
+    phone: str
+    address: str
     city: str
     status: str
     score: int
