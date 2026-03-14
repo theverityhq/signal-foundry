@@ -54,12 +54,29 @@ python3 -m signal_foundry \
   --output-dir output
 ```
 
+Bulk prospect triage without crawling every site:
+
+```bash
+python3 -m signal_foundry \
+  --input data/prospects-14589-initial.csv \
+  --output-dir output/14589-batch \
+  --prospect-only \
+  --top-n 10
+```
+
 This writes:
 
 - `output/audit-report.csv`
 - `output/audit-report.json`
 - `output/audit-report.md`
 - `output/audit-report.html`
+- optionally `output/top-N/*` when `--top-n` is used
+
+Recommended workflow:
+
+1. Run `--prospect-only --top-n 10` on a large lead list.
+2. Review the generated `top-10/audit-report.html`.
+3. Run a live audit only on those shortlisted businesses from a network-enabled environment.
 
 ## Input format
 
@@ -81,6 +98,8 @@ CSV columns:
 - CSV, JSON, Markdown, and HTML outputs
 - sales-oriented HTML view with lead-fit ranking, tags, and best-target spotlighting
 - fetch failure capture so blocked audits show the reason instead of being mistaken for weak leads
+- prospect-only batch mode for large lead lists
+- top-N shortlist output so manual review is limited to the best candidates
 
 ## Next steps
 

@@ -313,6 +313,7 @@ def audit_businesses(
     user_agent: str,
     timeout_seconds: int,
     max_pages_per_site: int,
+    skip_live_audit: bool = False,
 ) -> list[AuditResult]:
     session = requests.Session()
     results: list[AuditResult] = []
@@ -337,6 +338,28 @@ def audit_businesses(
                     missing_fields=["website"],
                     opportunity_summary="This business does not have a website on file, so it is not a live schema-audit candidate yet.",
                     notes=["Prospect fit was scored from category and contact coverage only."],
+                )
+            )
+            continue
+
+        if skip_live_audit:
+            schema_type = recommend_schema_type(business, SiteSignals())
+            results.append(
+                AuditResult(
+                    business_name=business.name,
+                    category=business.category,
+                    website=business.website,
+                    phone=business.phone,
+                    address=business.address,
+                    city=business.city,
+                    prospect_fit=prospect_fit,
+                    prospect_fit_score=prospect_fit_score,
+                    status="needs_manual_review",
+                    score=0,
+                    opportunity_summary="Prospect was auto-ranked from business fit and contact completeness. Live site audit has not been run yet.",
+                    recommended_type=schema_type,
+                    recommended_jsonld=recommend_jsonld(business, schema_type),
+                    notes=["Prospect-only mode skipped website fetching.", "Run a live audit on shortlisted leads before making schema claims."],
                 )
             )
             continue
@@ -418,6 +441,13 @@ def audit_businesses(
         )
 
     return results
+
+
+def rank_results(results: list[AuditResult], limit: int | None = None) -> list[AuditResult]:
+    ranked = sorted(results, key=_lead_sort_key, reverse=True)
+    if limit is None or limit <= 0:
+        return ranked
+    return ranked[:limit]
 
 
 def write_reports(results: list[AuditResult], output_dir: Path) -> None:

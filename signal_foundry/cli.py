@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 
-from .audit import audit_businesses, load_businesses, write_reports
+from .audit import audit_businesses, rank_results, load_businesses, write_reports
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +41,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="User-Agent header for requests.",
     )
     parser.add_argument(
+        "--prospect-only",
+        action="store_true",
+        help="Skip live site fetching and score lead fit only. Best for large prospect batches.",
+    )
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=0,
+        help="Also write a ranked shortlist report for the top N leads.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable debug logging.",
@@ -62,8 +73,17 @@ def main() -> None:
         user_agent=args.user_agent,
         timeout_seconds=args.timeout_seconds,
         max_pages_per_site=args.max_pages_per_site,
+        skip_live_audit=args.prospect_only,
     )
-    write_reports(results, Path(args.output_dir))
+    output_dir = Path(args.output_dir)
+    write_reports(results, output_dir)
+
+    if args.top_n > 0:
+        shortlisted = rank_results(results, limit=args.top_n)
+        shortlist_dir = output_dir / f"top-{args.top_n}"
+        write_reports(shortlisted, shortlist_dir)
+        logging.info("Wrote ranked top-%s shortlist to %s", len(shortlisted), shortlist_dir)
+
     logging.info("Wrote %s audit result(s) to %s", len(results), args.output_dir)
 
 
