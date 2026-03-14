@@ -38,6 +38,7 @@ LOCAL_TYPES = {
 DETAIL_TYPES = {"Service", "Product", "Offer", "Menu", "MenuItem"}
 HIGH_VALUE_CATEGORIES = {"restaurant", "dentist", "autorepair", "optometrist"}
 MEDIUM_VALUE_CATEGORIES = {"barbershop", "landscaper"}
+MAX_FETCH_FAILURES = 4
 
 
 def load_businesses(input_csv: Path) -> list[Business]:
@@ -98,6 +99,57 @@ def fetch_html(
     )
     response.raise_for_status()
     return response.text
+
+
+def score_prospect_fit(business: Business) -> int:
+    category = business.category.lower().replace(" ", "")
+    score = 0
+
+    if business.website:
+        score += 28
+    if business.phone:
+        score += 18
+    if business.address:
+        score += 14
+    if business.city:
+        score += 5
+
+    if category in HIGH_VALUE_CATEGORIES:
+        score += 25
+    elif category in MEDIUM_VALUE_CATEGORIES:
+        score += 18
+    else:
+        score += 10
+
+    return max(0, min(100, score))
+
+
+def classify_prospect_fit(score: int) -> str:
+    if score >= 70:
+        return "Good Fit"
+    if score >= 50:
+        return "Needs Review"
+    return "Low Fit"
+
+
+def summarize_request_error(exc: requests.RequestException) -> str:
+    response = getattr(exc, "response", None)
+    request = getattr(exc, "request", None)
+    url = getattr(request, "url", "")
+    prefix = f"{url}: " if url else ""
+
+    if isinstance(exc, requests.HTTPError) and response is not None:
+        return f"{prefix}HTTP {response.status_code}"
+    if isinstance(exc, requests.Timeout):
+        return f"{prefix}timeout"
+    if isinstance(exc, requests.ConnectionError):
+        message = str(exc)
+        if "Name or service not known" in message or "nodename nor servname" in message or "resolve host" in message:
+            return f"{prefix}DNS lookup failed"
+        if "SSLError" in message:
+            return f"{prefix}SSL handshake failed"
+        return f"{prefix}connection failed"
+    return f"{prefix}{str(exc) or exc.__class__.__name__}"
 
 
 def extract_jsonld_types(html: str) -> set[str]:
@@ -266,6 +318,9 @@ def audit_businesses(
     results: list[AuditResult] = []
 
     for business in businesses:
+        prospect_fit_score = score_prospect_fit(business)
+        prospect_fit = classify_prospect_fit(prospect_fit_score)
+
         if not business.website:
             results.append(
                 AuditResult(
@@ -275,10 +330,13 @@ def audit_businesses(
                     phone=business.phone,
                     address=business.address,
                     city=business.city,
+                    prospect_fit=prospect_fit,
+                    prospect_fit_score=prospect_fit_score,
                     status="no_website",
                     score=0,
                     missing_fields=["website"],
-                    opportunity_summary="No website found.",
+                    opportunity_summary="This business does not have a website on file, so it is not a live schema-audit candidate yet.",
+                    notes=["Prospect fit was scored from category and contact coverage only."],
                 )
             )
             continue
@@ -287,6 +345,7 @@ def audit_businesses(
         signals = SiteSignals()
         scanned_urls: list[str] = []
         notes: list[str] = []
+        fetch_failures: list[str] = []
 
         for url in candidate_urls(business.website, max_pages_per_site):
             try:
@@ -298,6 +357,9 @@ def audit_businesses(
                 )
             except requests.RequestException as exc:
                 LOGGER.debug("Fetch failed for %s: %s", url, exc)
+                failure = summarize_request_error(exc)
+                if failure not in fetch_failures and len(fetch_failures) < MAX_FETCH_FAILURES:
+                    fetch_failures.append(failure)
                 continue
 
             scanned_urls.append(url)
@@ -313,11 +375,15 @@ def audit_businesses(
                     phone=business.phone,
                     address=business.address,
                     city=business.city,
-                    status="unreachable",
+                    prospect_fit=prospect_fit,
+                    prospect_fit_score=prospect_fit_score,
+                    status="needs_manual_review",
                     score=0,
-                    missing_fields=["crawlability"],
-                    opportunity_summary="Could not fetch the site during the audit.",
-                    notes=["No candidate pages returned a successful response."],
+                    opportunity_summary="Prospect fit looks promising, but the live audit could not be completed in this run.",
+                    recommended_type=recommend_schema_type(business, signals),
+                    recommended_jsonld=recommend_jsonld(business, recommend_schema_type(business, signals)),
+                    fetch_failures=fetch_failures,
+                    notes=["No candidate pages returned a successful response.", "Use a browser-assisted or unrestricted live audit before making schema claims."],
                 )
             )
             continue
@@ -329,21 +395,24 @@ def audit_businesses(
             notes.append("No JSON-LD detected on scanned pages.")
 
         results.append(
-                AuditResult(
-                    business_name=business.name,
-                    category=business.category,
-                    website=business.website,
-                    phone=business.phone,
-                    address=business.address,
-                    city=business.city,
-                    status="ok",
-                    score=score,
+            AuditResult(
+                business_name=business.name,
+                category=business.category,
+                website=business.website,
+                phone=business.phone,
+                address=business.address,
+                city=business.city,
+                prospect_fit=prospect_fit,
+                prospect_fit_score=prospect_fit_score,
+                status="verified",
+                score=score,
                 schema_types_found=sorted(schema_types),
                 missing_fields=missing_fields,
                 opportunity_summary=summary,
                 recommended_type=schema_type,
                 recommended_jsonld=recommend_jsonld(business, schema_type),
                 pages_scanned=scanned_urls,
+                fetch_failures=fetch_failures,
                 notes=notes,
             )
         )
@@ -372,6 +441,8 @@ def write_csv_report(results: list[AuditResult], path: Path) -> None:
         "phone",
         "address",
         "city",
+        "prospect_fit",
+        "prospect_fit_score",
         "status",
         "score",
         "schema_types_found",
@@ -379,6 +450,7 @@ def write_csv_report(results: list[AuditResult], path: Path) -> None:
         "opportunity_summary",
         "recommended_type",
         "pages_scanned",
+        "fetch_failures",
         "notes",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -393,6 +465,8 @@ def write_csv_report(results: list[AuditResult], path: Path) -> None:
                     "phone": result.phone,
                     "address": result.address,
                     "city": result.city,
+                    "prospect_fit": result.prospect_fit,
+                    "prospect_fit_score": result.prospect_fit_score,
                     "status": result.status,
                     "score": result.score,
                     "schema_types_found": ", ".join(result.schema_types_found),
@@ -400,6 +474,7 @@ def write_csv_report(results: list[AuditResult], path: Path) -> None:
                     "opportunity_summary": result.opportunity_summary,
                     "recommended_type": result.recommended_type,
                     "pages_scanned": ", ".join(result.pages_scanned),
+                    "fetch_failures": " | ".join(result.fetch_failures),
                     "notes": " | ".join(result.notes),
                 }
             )
@@ -414,23 +489,33 @@ def write_markdown_report(results: list[AuditResult], path: Path) -> None:
         lines.append(f"- Phone: {result.phone or 'None'}")
         lines.append(f"- Address: {result.address or 'None'}")
         lines.append(f"- City: {result.city}")
-        lines.append(f"- Status: {result.status}")
-        lines.append(f"- Score: {result.score}")
+        lines.append(f"- Prospect fit: {result.prospect_fit} ({result.prospect_fit_score})")
+        lines.append(f"- Live audit: {_audit_status_label(result.status)}")
+        lines.append(f"- Audit score: {result.score if result.status == 'verified' else 'Not verified'}")
         lines.append(f"- Opportunity: {result.opportunity_summary}")
-        lines.append(f"- Schema types: {', '.join(result.schema_types_found) or 'None'}")
-        lines.append(f"- Missing: {', '.join(result.missing_fields) or 'None'}")
+        lines.append(
+            f"- Schema types: {', '.join(result.schema_types_found) or ('Not verified yet' if result.status != 'verified' else 'None')}"
+        )
+        lines.append(
+            f"- Missing: {', '.join(result.missing_fields) or ('Not verified yet' if result.status != 'verified' else 'None')}"
+        )
         lines.append(f"- Recommended type: {result.recommended_type or 'None'}")
+        lines.append(f"- Fetch failures: {' | '.join(result.fetch_failures) or 'None'}")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def write_html_report(results: list[AuditResult], path: Path) -> None:
     total = len(results)
-    reachable = sum(1 for result in results if result.status == "ok")
-    unreachable = sum(1 for result in results if result.status == "unreachable")
-    average_score = round(sum(result.score for result in results) / total) if total else 0
+    verified = sum(1 for result in results if result.status == "verified")
+    manual_review = sum(1 for result in results if result.status == "needs_manual_review")
+    average_score = (
+        round(sum(result.score for result in results if result.status == "verified") / verified)
+        if verified
+        else 0
+    )
     ranked_results = sorted(results, key=_lead_sort_key, reverse=True)
-    tier_one = sum(1 for result in ranked_results if _lead_priority_tier(result) == "Tier 1")
+    tier_one = sum(1 for result in ranked_results if result.prospect_fit == "Good Fit")
     cards = "\n".join(_render_result_card(result) for result in ranked_results)
     spotlight = "\n".join(_render_spotlight_item(result) for result in ranked_results[:5])
     html_document = f"""<!DOCTYPE html>
@@ -638,8 +723,8 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }}
-    .status-ok {{ background: var(--accent-soft); color: var(--accent); }}
-    .status-unreachable,
+    .status-verified {{ background: var(--accent-soft); color: var(--accent); }}
+    .status-needs_manual_review {{ background: var(--warn-soft); color: var(--warn); }}
     .status-no_website {{ background: var(--bad-soft); color: var(--bad); }}
     .score {{
       min-width: 70px;
@@ -771,13 +856,13 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
     <section class="hero">
       <p class="eyebrow">Signal Foundry Prospect View</p>
       <h1>14589 Lead List</h1>
-      <p class="subtitle">A clean local view of the current prospect set, including contact details, city/category filters, site status, score, and the schema recommendation generated for each business.</p>
+      <p class="subtitle">A clean local view of the current prospect set, separating prospect fit from live audit verification so failed crawls do not get mistaken for weak leads.</p>
       <div class="stats">
         <div class="stat"><span class="stat-label">Businesses</span><span class="stat-value">{total}</span></div>
-        <div class="stat"><span class="stat-label">Reachable</span><span class="stat-value">{reachable}</span></div>
-        <div class="stat"><span class="stat-label">Unreachable</span><span class="stat-value">{unreachable}</span></div>
-        <div class="stat"><span class="stat-label">Avg Score</span><span class="stat-value">{average_score}</span></div>
-        <div class="stat"><span class="stat-label">Tier 1 Leads</span><span class="stat-value">{tier_one}</span></div>
+        <div class="stat"><span class="stat-label">Audit Verified</span><span class="stat-value">{verified}</span></div>
+        <div class="stat"><span class="stat-label">Manual Review</span><span class="stat-value">{manual_review}</span></div>
+        <div class="stat"><span class="stat-label">Avg Verified Audit</span><span class="stat-value">{average_score}</span></div>
+        <div class="stat"><span class="stat-label">Good-Fit Leads</span><span class="stat-value">{tier_one}</span></div>
       </div>
     </section>
 
@@ -799,27 +884,27 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
         </select>
       </div>
       <div class="control">
-        <label for="status-filter">Status</label>
+        <label for="status-filter">Live Audit</label>
         <select id="status-filter">
-          <option value="">All statuses</option>
-          <option value="ok">Reachable</option>
-          <option value="unreachable">Unreachable</option>
+          <option value="">All audit states</option>
+          <option value="verified">Verified</option>
+          <option value="needs_manual_review">Needs manual review</option>
           <option value="no_website">No website</option>
         </select>
       </div>
       <div class="control">
-        <label for="priority-filter">Priority</label>
+        <label for="priority-filter">Prospect Fit</label>
         <select id="priority-filter">
-          <option value="">All tiers</option>
-          <option value="Tier 1">Tier 1</option>
-          <option value="Tier 2">Tier 2</option>
-          <option value="Tier 3">Tier 3</option>
+          <option value="">All fit levels</option>
+          <option value="Good Fit">Good fit</option>
+          <option value="Needs Review">Needs review</option>
+          <option value="Low Fit">Low fit</option>
         </select>
       </div>
     </section>
 
     <section class="spotlight">
-      <p class="spotlight-title">Best Targets First</p>
+      <p class="spotlight-title">Best-Fit Targets First</p>
       <div class="spotlight-grid">
         {spotlight}
       </div>
@@ -890,9 +975,8 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
 
 
 def _render_result_card(result: AuditResult) -> str:
-    priority_tier = _lead_priority_tier(result)
-    lead_fit = _lead_fit_score(result)
     lead_tags = _lead_tags(result)
+    audit_status_label = _audit_status_label(result.status)
     search_text = " ".join(
         part
         for part in [
@@ -905,15 +989,25 @@ def _render_result_card(result: AuditResult) -> str:
             result.opportunity_summary,
             " ".join(result.missing_fields),
             " ".join(result.schema_types_found),
+            " ".join(result.fetch_failures),
             " ".join(lead_tags),
-            priority_tier,
+            result.prospect_fit,
+            audit_status_label,
         ]
         if part
     )
-    schema_pills = _render_pills(result.schema_types_found, fallback="No schema found")
-    missing_pills = _render_pills(result.missing_fields, fallback="No missing fields recorded", muted=True)
+    schema_pills = _render_pills(
+        result.schema_types_found,
+        fallback="Not verified yet" if result.status != "verified" else "No schema found",
+    )
+    missing_pills = _render_pills(
+        result.missing_fields,
+        fallback="Not verified yet" if result.status != "verified" else "No missing fields recorded",
+        muted=True,
+    )
     pages_pills = _render_pills(result.pages_scanned, fallback="No pages scanned", muted=True)
     notes_pills = _render_pills(result.notes, fallback="No notes", muted=True)
+    fetch_failure_pills = _render_pills(result.fetch_failures, fallback="None", muted=True)
     tag_pills = _render_pills(lead_tags, fallback="No lead tags")
     recommended_jsonld = html.escape(result.recommended_jsonld or "No JSON-LD recommendation was generated.")
     website = (
@@ -924,22 +1018,22 @@ def _render_result_card(result: AuditResult) -> str:
     phone = html.escape(result.phone or "None")
     address = html.escape(result.address or "None")
     city = html.escape(result.city or "Unknown")
-    status_label = result.status.replace("_", " ")
+    audit_score = str(result.score) if result.status == "verified" else "Not verified"
 
-    return f"""<article class="card" data-city="{html.escape(result.city)}" data-category="{html.escape(result.category)}" data-status="{html.escape(result.status)}" data-priority="{html.escape(priority_tier)}" data-search="{html.escape(search_text)}">
+    return f"""<article class="card" data-city="{html.escape(result.city)}" data-category="{html.escape(result.category)}" data-status="{html.escape(result.status)}" data-priority="{html.escape(result.prospect_fit)}" data-search="{html.escape(search_text)}">
   <div class="card-top">
     <div>
       <h2>{html.escape(result.business_name)}</h2>
       <div class="meta">
         <span class="chip">{html.escape(result.category)}</span>
         <span class="chip">{city}</span>
-        <span class="chip status-{html.escape(result.status)}">{html.escape(status_label)}</span>
-        <span class="chip">{html.escape(priority_tier)}</span>
+        <span class="chip status-{html.escape(result.status)}">{html.escape(audit_status_label)}</span>
+        <span class="chip">{html.escape(result.prospect_fit)}</span>
       </div>
     </div>
     <div class="score">
-      <span class="score-value">{lead_fit}</span>
-      <span class="score-label">Lead Fit</span>
+      <span class="score-value">{result.prospect_fit_score}</span>
+      <span class="score-label">Prospect Fit</span>
     </div>
   </div>
   <div class="details">
@@ -956,8 +1050,12 @@ def _render_result_card(result: AuditResult) -> str:
       <div class="detail-value">{address}</div>
     </div>
     <div class="detail">
+      <span class="detail-label">Live Audit</span>
+      <div class="detail-value">{html.escape(audit_status_label)}</div>
+    </div>
+    <div class="detail">
       <span class="detail-label">Audit Score</span>
-      <div class="detail-value">{result.score}</div>
+      <div class="detail-value">{audit_score}</div>
     </div>
     <div class="detail">
       <span class="detail-label">Recommended Type</span>
@@ -982,6 +1080,10 @@ def _render_result_card(result: AuditResult) -> str:
     <div class="list-block">{pages_pills}</div>
   </div>
   <div>
+    <span class="detail-label">Fetch Failures</span>
+    <div class="list-block">{fetch_failure_pills}</div>
+  </div>
+  <div>
     <span class="detail-label">Notes</span>
     <div class="list-block">{notes_pills}</div>
   </div>
@@ -1001,63 +1103,19 @@ def _render_pills(values: list[str], *, fallback: str, muted: bool = False) -> s
 
 
 def _render_spotlight_item(result: AuditResult) -> str:
-    tier = _lead_priority_tier(result)
-    fit = _lead_fit_score(result)
+    fit = result.prospect_fit_score
     reason = ", ".join(_lead_tags(result)[:2]) or "Prospect fit"
     return (
         f'<div class="spotlight-item"><strong>{html.escape(result.business_name)}</strong>'
         f'<span>{html.escape(result.category)} in {html.escape(result.city or "Unknown")}</span>'
-        f'<span>{html.escape(tier)} | Lead fit {fit}</span>'
+        f'<span>{html.escape(result.prospect_fit)} | Prospect fit {fit}</span>'
         f'<span>{html.escape(reason)}</span></div>'
     )
 
 
 def _lead_sort_key(result: AuditResult) -> tuple[int, int, str]:
-    return (_lead_fit_score(result), result.score, result.business_name.lower())
-
-
-def _lead_priority_tier(result: AuditResult) -> str:
-    score = _lead_fit_score(result)
-    if score >= 75:
-        return "Tier 1"
-    if score >= 55:
-        return "Tier 2"
-    return "Tier 3"
-
-
-def _lead_fit_score(result: AuditResult) -> int:
-    category = result.category.lower().replace(" ", "")
-    score = 0
-
-    if result.website:
-        score += 20
-    if result.phone:
-        score += 20
-    if result.address:
-        score += 15
-    if result.city:
-        score += 5
-
-    if category in HIGH_VALUE_CATEGORIES:
-        score += 20
-    elif category in MEDIUM_VALUE_CATEGORIES:
-        score += 14
-    else:
-        score += 10
-
-    if result.status == "ok":
-        score += min(20, max(0, 70 - result.score) // 2)
-    elif result.status == "unreachable":
-        score += 10
-    elif result.status == "no_website":
-        score -= 10
-
-    if "structured_data" in result.missing_fields or "local_business_schema" in result.missing_fields:
-        score += 10
-    elif result.status == "unreachable":
-        score += 8
-
-    return max(0, min(100, score))
+    verified_bonus = 1 if result.status == "verified" else 0
+    return (result.prospect_fit_score, verified_bonus, result.score, result.business_name.lower())
 
 
 def _lead_tags(result: AuditResult) -> list[str]:
@@ -1076,20 +1134,31 @@ def _lead_tags(result: AuditResult) -> list[str]:
     if result.website:
         tags.append("Website present")
 
-    if result.status == "ok":
+    if result.status == "verified":
         if result.score < 50:
-            tags.append("Strong fix opportunity")
+            tags.append("Verified fix opportunity")
         else:
-            tags.append("Reachable now")
-    elif result.status == "unreachable":
-        tags.append("Needs live crawl")
+            tags.append("Audit verified")
+    elif result.status == "needs_manual_review":
+        tags.append("Needs live audit")
     elif result.status == "no_website":
         tags.append("No website")
 
-    if "structured_data" in result.missing_fields or result.status == "unreachable":
+    if "structured_data" in result.missing_fields:
         tags.append("Schema audit candidate")
+    elif result.status == "needs_manual_review":
+        tags.append("Schema check pending")
 
     if not result.phone and not result.address:
         tags.append("Needs contact enrichment")
 
     return tags[:5]
+
+
+def _audit_status_label(status: str) -> str:
+    labels = {
+        "verified": "Verified",
+        "needs_manual_review": "Needs Manual Review",
+        "no_website": "No Website",
+    }
+    return labels.get(status, status.replace("_", " ").title())

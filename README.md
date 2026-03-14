@@ -5,6 +5,8 @@ Signal Foundry is a local-business AI/search visibility audit tool.
 The MVP audits a CSV of business websites and reports:
 
 - whether the site is reachable
+- whether the live audit was actually verified or still needs manual review
+- prospect-fit scoring that stays separate from crawl success
 - whether JSON-LD structured data is present
 - which schema types were detected
 - which high-value signals appear missing
@@ -78,6 +80,7 @@ CSV columns:
 - heuristic scoring
 - CSV, JSON, Markdown, and HTML outputs
 - sales-oriented HTML view with lead-fit ranking, tags, and best-target spotlighting
+- fetch failure capture so blocked audits show the reason instead of being mistaken for weak leads
 
 ## Next steps
 

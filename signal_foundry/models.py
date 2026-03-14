@@ -31,6 +31,8 @@ class AuditResult:
     phone: str
     address: str
     city: str
+    prospect_fit: str
+    prospect_fit_score: int
     status: str
     score: int
     schema_types_found: list[str] = field(default_factory=list)
@@ -39,4 +41,5 @@ class AuditResult:
     recommended_type: str = ""
     recommended_jsonld: str = ""
     pages_scanned: list[str] = field(default_factory=list)
+    fetch_failures: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
