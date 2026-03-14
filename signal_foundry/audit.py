@@ -50,7 +50,7 @@ def load_businesses(input_csv: Path) -> list[Business]:
             website = (row.get("website") or "").strip()
             businesses.append(
                 Business(
-                    name=(row.get("name") or "").strip(),
+                    name=(row.get("name") or row.get("business_name") or "").strip(),
                     category=(row.get("category") or "").strip(),
                     website=normalize_url(website),
                     phone=(row.get("phone") or "").strip(),

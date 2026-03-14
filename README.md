@@ -86,6 +86,8 @@ python3 -m signal_foundry \
   --output-dir output/14589-live-audit
 ```
 
+The loader accepts either the original prospect CSV format or a prior `audit-report.csv` shortlist export.
+
 The live-audit output includes:
 
 - current schema capture when JSON-LD is found
