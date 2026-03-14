@@ -78,6 +78,21 @@ Recommended workflow:
 2. Review the generated `top-10/audit-report.html`.
 3. Run a live audit only on those shortlisted businesses from a network-enabled environment.
 
+Live audit on a shortlisted batch:
+
+```bash
+python3 -m signal_foundry \
+  --input output/14589-batch/top-10/audit-report.csv \
+  --output-dir output/14589-live-audit
+```
+
+The live-audit output includes:
+
+- current schema capture when JSON-LD is found
+- proposed replacement schema
+- recommendation reasons tied to the detected gaps
+- saved page snapshots and JSON artifacts under `output/.../artifacts/`
+
 ## Input format
 
 CSV columns:
@@ -100,6 +115,7 @@ CSV columns:
 - fetch failure capture so blocked audits show the reason instead of being mistaken for weak leads
 - prospect-only batch mode for large lead lists
 - top-N shortlist output so manual review is limited to the best candidates
+- verified live-audit artifacts for current-vs-proposed schema review
 
 ## Next steps
 

@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demo Bistro Contact</title>
+</head>
+<body>
+  <h1>Contact Demo Bistro</h1>
+  <p>Phone: 585-555-0101</p>
+  <p>Address: 123 Main Street, Penfield, NY</p>
+  <p>Open Tuesday through Sunday for dinner.</p>
+</body>
+</html>

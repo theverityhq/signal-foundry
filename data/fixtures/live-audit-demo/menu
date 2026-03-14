@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demo Bistro Menu</title>
+</head>
+<body>
+  <h1>Menu</h1>
+  <ul>
+    <li>Rigatoni alla vodka</li>
+    <li>Roasted salmon</li>
+    <li>Wood-fired pizza</li>
+  </ul>
+</body>
+</html>

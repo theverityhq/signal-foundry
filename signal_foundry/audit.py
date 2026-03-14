@@ -4,6 +4,7 @@ import csv
 import html
 import json
 import logging
+import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -101,6 +102,11 @@ def fetch_html(
     return response.text
 
 
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "business"
+
+
 def score_prospect_fit(business: Business) -> int:
     category = business.category.lower().replace(" ", "")
     score = 0
@@ -152,17 +158,23 @@ def summarize_request_error(exc: requests.RequestException) -> str:
     return f"{prefix}{str(exc) or exc.__class__.__name__}"
 
 
-def extract_jsonld_types(html: str) -> set[str]:
+def extract_jsonld_blocks(html: str) -> list[Any]:
     soup = BeautifulSoup(html, "html.parser")
-    found: set[str] = set()
+    blocks: list[Any] = []
     for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
         raw = tag.string or tag.get_text(strip=False)
         if not raw or not raw.strip():
             continue
         try:
-            payload = json.loads(raw)
+            blocks.append(json.loads(raw))
         except json.JSONDecodeError:
             continue
+    return blocks
+
+
+def extract_jsonld_types(html: str) -> set[str]:
+    found: set[str] = set()
+    for payload in extract_jsonld_blocks(html):
         _walk_types(payload, found)
     return found
 
@@ -307,6 +319,98 @@ def recommend_jsonld(business: Business, schema_type: str) -> str:
     return json.dumps(payload, indent=2)
 
 
+def build_schema_gap_summary(
+    *,
+    status: str,
+    schema_types: set[str],
+    missing_fields: list[str],
+    fetch_failures: list[str],
+) -> str:
+    if status != "verified":
+        if fetch_failures:
+            return "Live audit was not verified. Review the fetch failures before making claims about current schema."
+        return "Live audit was not verified yet."
+
+    if not schema_types:
+        return "No JSON-LD schema was detected on the scanned pages."
+
+    if not missing_fields:
+        return "Schema was detected and no major gaps were flagged by the current heuristic audit."
+
+    return "Schema is present, but the current implementation appears incomplete for local search and AI readability."
+
+
+def build_recommendation_reasons(result: AuditResult) -> list[str]:
+    reasons: list[str] = []
+
+    if result.status != "verified":
+        reasons.append("Run a verified live audit before presenting current-schema claims.")
+        reasons.append("Use the proposed schema as a draft implementation plan, not as proof of an existing gap.")
+        return reasons
+
+    if "structured_data" in result.missing_fields:
+        reasons.append("No JSON-LD was detected, so search engines and AI tools get less explicit business context.")
+    if "local_business_schema" in result.missing_fields:
+        reasons.append(f"A typed {result.recommended_type or 'LocalBusiness'} schema would better define the business for Google and AI systems.")
+    if "hours" in result.missing_fields:
+        reasons.append("Opening-hours signals appear weak or missing, which can reduce trust and machine readability.")
+    if "phone" in result.missing_fields:
+        reasons.append("Telephone markup appears weak or missing, which hurts contact clarity in structured search results.")
+    if "address" in result.missing_fields:
+        reasons.append("Address signals appear weak or missing, which matters for local entity understanding.")
+    if "menu_schema" in result.missing_fields:
+        reasons.append("Menu-like content was found without clear menu schema, so rich food-service context may be lost.")
+    if "service_schema" in result.missing_fields:
+        reasons.append("Service-oriented content was found without service schema, which makes service understanding less explicit.")
+    if "product_schema" in result.missing_fields:
+        reasons.append("Product-like content was found without product schema, limiting machine-readable offer detail.")
+
+    if not reasons:
+        reasons.append("The proposed schema mainly standardizes and strengthens what is already present.")
+
+    return reasons
+
+
+def write_audit_artifacts(
+    result: AuditResult,
+    *,
+    artifact_dir: Path | None,
+    fetched_pages: list[tuple[str, str]],
+    jsonld_blocks: list[Any],
+) -> list[str]:
+    if artifact_dir is None:
+        return []
+
+    business_dir = artifact_dir / slugify(result.business_name)
+    business_dir.mkdir(parents=True, exist_ok=True)
+    artifact_paths: list[str] = []
+
+    if jsonld_blocks:
+        current_schema_path = business_dir / "current-schema.json"
+        current_schema_path.write_text(json.dumps(jsonld_blocks, indent=2), encoding="utf-8")
+        artifact_paths.append(str(current_schema_path.resolve()))
+
+    proposed_schema_path = business_dir / "proposed-schema.json"
+    proposed_schema_path.write_text(result.recommended_jsonld or "", encoding="utf-8")
+    artifact_paths.append(str(proposed_schema_path.resolve()))
+
+    for index, (url, page_html) in enumerate(fetched_pages, start=1):
+        page_path = business_dir / f"page-{index:02d}.html"
+        page_path.write_text(page_html, encoding="utf-8")
+        artifact_paths.append(str(page_path.resolve()))
+
+    if fetched_pages:
+        manifest_path = business_dir / "pages.json"
+        manifest_rows = [
+            {"url": page_url, "file": f"page-{page_index:02d}.html"}
+            for page_index, (page_url, _page_html) in enumerate(fetched_pages, start=1)
+        ]
+        manifest_path.write_text(json.dumps(manifest_rows, indent=2), encoding="utf-8")
+        artifact_paths.append(str(manifest_path.resolve()))
+
+    return artifact_paths
+
+
 def audit_businesses(
     businesses: list[Business],
     *,
@@ -314,6 +418,7 @@ def audit_businesses(
     timeout_seconds: int,
     max_pages_per_site: int,
     skip_live_audit: bool = False,
+    artifact_dir: Path | None = None,
 ) -> list[AuditResult]:
     session = requests.Session()
     results: list[AuditResult] = []
@@ -337,6 +442,8 @@ def audit_businesses(
                     score=0,
                     missing_fields=["website"],
                     opportunity_summary="This business does not have a website on file, so it is not a live schema-audit candidate yet.",
+                    schema_gap_summary="No site is available to audit.",
+                    recommendation_reasons=["Add or confirm the business website before offering a schema audit."],
                     notes=["Prospect fit was scored from category and contact coverage only."],
                 )
             )
@@ -359,14 +466,33 @@ def audit_businesses(
                     opportunity_summary="Prospect was auto-ranked from business fit and contact completeness. Live site audit has not been run yet.",
                     recommended_type=schema_type,
                     recommended_jsonld=recommend_jsonld(business, schema_type),
+                    schema_gap_summary="Current schema has not been verified because prospect-only mode skipped the live audit.",
+                    recommendation_reasons=build_recommendation_reasons(
+                        AuditResult(
+                            business_name=business.name,
+                            category=business.category,
+                            website=business.website,
+                            phone=business.phone,
+                            address=business.address,
+                            city=business.city,
+                            prospect_fit=prospect_fit,
+                            prospect_fit_score=prospect_fit_score,
+                            status="needs_manual_review",
+                            score=0,
+                            recommended_type=schema_type,
+                            recommended_jsonld=recommend_jsonld(business, schema_type),
+                        )
+                    ),
                     notes=["Prospect-only mode skipped website fetching.", "Run a live audit on shortlisted leads before making schema claims."],
                 )
             )
             continue
 
         schema_types: set[str] = set()
+        all_jsonld_blocks: list[Any] = []
         signals = SiteSignals()
         scanned_urls: list[str] = []
+        fetched_pages: list[tuple[str, str]] = []
         notes: list[str] = []
         fetch_failures: list[str] = []
 
@@ -386,10 +512,15 @@ def audit_businesses(
                 continue
 
             scanned_urls.append(url)
-            schema_types.update(extract_jsonld_types(html))
+            fetched_pages.append((url, html))
+            page_blocks = extract_jsonld_blocks(html)
+            all_jsonld_blocks.extend(page_blocks)
+            for payload in page_blocks:
+                _walk_types(payload, schema_types)
             signals = merge_signals(signals, detect_signals(html, business))
 
         if not scanned_urls:
+            schema_type = recommend_schema_type(business, signals)
             results.append(
                 AuditResult(
                     business_name=business.name,
@@ -403,42 +534,79 @@ def audit_businesses(
                     status="needs_manual_review",
                     score=0,
                     opportunity_summary="Prospect fit looks promising, but the live audit could not be completed in this run.",
-                    recommended_type=recommend_schema_type(business, signals),
-                    recommended_jsonld=recommend_jsonld(business, recommend_schema_type(business, signals)),
+                    recommended_type=schema_type,
+                    recommended_jsonld=recommend_jsonld(business, schema_type),
                     fetch_failures=fetch_failures,
+                    schema_gap_summary=build_schema_gap_summary(
+                        status="needs_manual_review",
+                        schema_types=schema_types,
+                        missing_fields=[],
+                        fetch_failures=fetch_failures,
+                    ),
+                    recommendation_reasons=build_recommendation_reasons(
+                        AuditResult(
+                            business_name=business.name,
+                            category=business.category,
+                            website=business.website,
+                            phone=business.phone,
+                            address=business.address,
+                            city=business.city,
+                            prospect_fit=prospect_fit,
+                            prospect_fit_score=prospect_fit_score,
+                            status="needs_manual_review",
+                            score=0,
+                            recommended_type=schema_type,
+                            recommended_jsonld=recommend_jsonld(business, schema_type),
+                            fetch_failures=fetch_failures,
+                        )
+                    ),
                     notes=["No candidate pages returned a successful response.", "Use a browser-assisted or unrestricted live audit before making schema claims."],
                 )
             )
             continue
 
+        fetch_failures = []
         score, missing_fields, summary = score_business(schema_types, signals)
         schema_type = recommend_schema_type(business, signals)
         notes.append(f"Scanned {len(scanned_urls)} page(s).")
         if not schema_types:
             notes.append("No JSON-LD detected on scanned pages.")
 
-        results.append(
-            AuditResult(
-                business_name=business.name,
-                category=business.category,
-                website=business.website,
-                phone=business.phone,
-                address=business.address,
-                city=business.city,
-                prospect_fit=prospect_fit,
-                prospect_fit_score=prospect_fit_score,
+        result = AuditResult(
+            business_name=business.name,
+            category=business.category,
+            website=business.website,
+            phone=business.phone,
+            address=business.address,
+            city=business.city,
+            prospect_fit=prospect_fit,
+            prospect_fit_score=prospect_fit_score,
+            status="verified",
+            score=score,
+            schema_types_found=sorted(schema_types),
+            missing_fields=missing_fields,
+            opportunity_summary=summary,
+            recommended_type=schema_type,
+            recommended_jsonld=recommend_jsonld(business, schema_type),
+            current_jsonld=json.dumps(all_jsonld_blocks, indent=2) if all_jsonld_blocks else "",
+            schema_gap_summary=build_schema_gap_summary(
                 status="verified",
-                score=score,
-                schema_types_found=sorted(schema_types),
+                schema_types=schema_types,
                 missing_fields=missing_fields,
-                opportunity_summary=summary,
-                recommended_type=schema_type,
-                recommended_jsonld=recommend_jsonld(business, schema_type),
-                pages_scanned=scanned_urls,
                 fetch_failures=fetch_failures,
-                notes=notes,
-            )
+            ),
+            pages_scanned=scanned_urls,
+            fetch_failures=fetch_failures,
+            notes=notes,
         )
+        result.recommendation_reasons = build_recommendation_reasons(result)
+        result.artifact_paths = write_audit_artifacts(
+            result,
+            artifact_dir=artifact_dir,
+            fetched_pages=fetched_pages,
+            jsonld_blocks=all_jsonld_blocks,
+        )
+        results.append(result)
 
     return results
 
@@ -478,9 +646,14 @@ def write_csv_report(results: list[AuditResult], path: Path) -> None:
         "schema_types_found",
         "missing_fields",
         "opportunity_summary",
+        "schema_gap_summary",
+        "recommendation_reasons",
         "recommended_type",
+        "current_jsonld",
+        "recommended_jsonld",
         "pages_scanned",
         "fetch_failures",
+        "artifact_paths",
         "notes",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -502,9 +675,14 @@ def write_csv_report(results: list[AuditResult], path: Path) -> None:
                     "schema_types_found": ", ".join(result.schema_types_found),
                     "missing_fields": ", ".join(result.missing_fields),
                     "opportunity_summary": result.opportunity_summary,
+                    "schema_gap_summary": result.schema_gap_summary,
+                    "recommendation_reasons": " | ".join(result.recommendation_reasons),
                     "recommended_type": result.recommended_type,
+                    "current_jsonld": result.current_jsonld,
+                    "recommended_jsonld": result.recommended_jsonld,
                     "pages_scanned": ", ".join(result.pages_scanned),
                     "fetch_failures": " | ".join(result.fetch_failures),
+                    "artifact_paths": " | ".join(result.artifact_paths),
                     "notes": " | ".join(result.notes),
                 }
             )
@@ -523,14 +701,17 @@ def write_markdown_report(results: list[AuditResult], path: Path) -> None:
         lines.append(f"- Live audit: {_audit_status_label(result.status)}")
         lines.append(f"- Audit score: {result.score if result.status == 'verified' else 'Not verified'}")
         lines.append(f"- Opportunity: {result.opportunity_summary}")
+        lines.append(f"- Schema gap summary: {result.schema_gap_summary or 'None'}")
         lines.append(
             f"- Schema types: {', '.join(result.schema_types_found) or ('Not verified yet' if result.status != 'verified' else 'None')}"
         )
         lines.append(
             f"- Missing: {', '.join(result.missing_fields) or ('Not verified yet' if result.status != 'verified' else 'None')}"
         )
+        lines.append(f"- Recommendation reasons: {' | '.join(result.recommendation_reasons) or 'None'}")
         lines.append(f"- Recommended type: {result.recommended_type or 'None'}")
         lines.append(f"- Fetch failures: {' | '.join(result.fetch_failures) or 'None'}")
+        lines.append(f"- Artifacts: {' | '.join(result.artifact_paths) or 'None'}")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -827,6 +1008,47 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
       border-left: 4px solid #c0843d;
       line-height: 1.6;
     }}
+    .comparison-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }}
+    .code-panel {{
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #fffaf1;
+      overflow: hidden;
+    }}
+    .code-panel-header {{
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font: 600 11px/1.3 "Avenir Next", "Trebuchet MS", sans-serif;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }}
+    .code-panel pre {{
+      margin: 0;
+      padding: 14px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 500 12px/1.6 "SFMono-Regular", Consolas, monospace;
+      color: #20303a;
+    }}
+    .artifact-links {{
+      display: grid;
+      gap: 8px;
+    }}
+    .artifact-links a {{
+      display: block;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(29, 39, 51, 0.08);
+      background: #faf6ee;
+      text-decoration: none;
+      font: 500 14px/1.4 "Avenir Next", "Trebuchet MS", sans-serif;
+    }}
     details {{
       border: 1px solid var(--line);
       border-radius: 16px;
@@ -876,6 +1098,9 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
         border-radius: 22px;
       }}
       .details {{
+        grid-template-columns: 1fr;
+      }}
+      .comparison-grid {{
         grid-template-columns: 1fr;
       }}
     }}
@@ -1039,6 +1264,9 @@ def _render_result_card(result: AuditResult) -> str:
     notes_pills = _render_pills(result.notes, fallback="No notes", muted=True)
     fetch_failure_pills = _render_pills(result.fetch_failures, fallback="None", muted=True)
     tag_pills = _render_pills(lead_tags, fallback="No lead tags")
+    reason_pills = _render_pills(result.recommendation_reasons, fallback="No recommendation reasons yet", muted=True)
+    artifact_links = _render_artifact_links(result.artifact_paths)
+    current_jsonld = html.escape(result.current_jsonld or "Current schema not captured yet.")
     recommended_jsonld = html.escape(result.recommended_jsonld or "No JSON-LD recommendation was generated.")
     website = (
         f'<a href="{html.escape(result.website)}" target="_blank" rel="noreferrer">{html.escape(result.website)}</a>'
@@ -1093,6 +1321,10 @@ def _render_result_card(result: AuditResult) -> str:
     </div>
   </div>
   <div class="summary">{html.escape(result.opportunity_summary or 'No summary available.')}</div>
+  <div class="detail">
+    <span class="detail-label">Schema Gap Summary</span>
+    <div class="detail-value">{html.escape(result.schema_gap_summary or 'None')}</div>
+  </div>
   <div>
     <span class="detail-label">Lead Tags</span>
     <div class="list-block">{tag_pills}</div>
@@ -1117,10 +1349,24 @@ def _render_result_card(result: AuditResult) -> str:
     <span class="detail-label">Notes</span>
     <div class="list-block">{notes_pills}</div>
   </div>
-  <details>
-    <summary>Recommended JSON-LD</summary>
-    <pre>{recommended_jsonld}</pre>
-  </details>
+  <div>
+    <span class="detail-label">Recommendation Reasons</span>
+    <div class="list-block">{reason_pills}</div>
+  </div>
+  <div class="comparison-grid">
+    <section class="code-panel">
+      <div class="code-panel-header">Current Schema</div>
+      <pre>{current_jsonld}</pre>
+    </section>
+    <section class="code-panel">
+      <div class="code-panel-header">Proposed Schema</div>
+      <pre>{recommended_jsonld}</pre>
+    </section>
+  </div>
+  <div>
+    <span class="detail-label">Audit Artifacts</span>
+    <div class="artifact-links">{artifact_links}</div>
+  </div>
 </article>"""
 
 
@@ -1130,6 +1376,15 @@ def _render_pills(values: list[str], *, fallback: str, muted: bool = False) -> s
         return f'<span class="{class_name}">{html.escape(fallback)}</span>'
     class_name = "pill pill-muted" if muted else "pill"
     return "".join(f'<span class="{class_name}">{html.escape(value)}</span>' for value in values)
+
+
+def _render_artifact_links(paths: list[str]) -> str:
+    if not paths:
+        return '<span class="pill pill-muted">No artifacts saved</span>'
+    return "".join(
+        f'<a href="{html.escape(Path(path).as_uri() if Path(path).is_absolute() else path)}" target="_blank" rel="noreferrer">{html.escape(Path(path).name if Path(path).is_absolute() else path)}</a>'
+        for path in paths
+    )
 
 
 def _render_spotlight_item(result: AuditResult) -> str:

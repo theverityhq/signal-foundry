@@ -40,6 +40,10 @@ class AuditResult:
     opportunity_summary: str = ""
     recommended_type: str = ""
     recommended_jsonld: str = ""
+    current_jsonld: str = ""
+    schema_gap_summary: str = ""
+    recommendation_reasons: list[str] = field(default_factory=list)
     pages_scanned: list[str] = field(default_factory=list)
     fetch_failures: list[str] = field(default_factory=list)
+    artifact_paths: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)

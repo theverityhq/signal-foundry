@@ -74,6 +74,7 @@ def main() -> None:
         timeout_seconds=args.timeout_seconds,
         max_pages_per_site=args.max_pages_per_site,
         skip_live_audit=args.prospect_only,
+        artifact_dir=None if args.prospect_only else Path(args.output_dir).resolve() / "artifacts",
     )
     output_dir = Path(args.output_dir)
     write_reports(results, output_dir)
