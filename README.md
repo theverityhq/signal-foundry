@@ -95,6 +95,15 @@ The live-audit output includes:
 - recommendation reasons tied to the detected gaps
 - saved page snapshots and JSON artifacts under `output/.../artifacts/`
 
+Regenerate rankings and outreach assets from an existing verified report without crawling again:
+
+```bash
+python3 -m signal_foundry \
+  --input output/14589-live-audit/audit-report.csv \
+  --output-dir output/14589-live-audit-ranked \
+  --reuse-report
+```
+
 ## Input format
 
 CSV columns:

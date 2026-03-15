@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 
-from .audit import audit_businesses, rank_results, load_businesses, write_reports
+from .audit import audit_businesses, rank_results, load_audit_results, load_businesses, write_reports
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also write a ranked shortlist report for the top N leads.",
     )
     parser.add_argument(
+        "--reuse-report",
+        action="store_true",
+        help="Treat --input as an existing audit-report.csv and regenerate ranking/export outputs without refetching sites.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable debug logging.",
@@ -67,15 +72,18 @@ def main() -> None:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    businesses = load_businesses(Path(args.input))
-    results = audit_businesses(
-        businesses,
-        user_agent=args.user_agent,
-        timeout_seconds=args.timeout_seconds,
-        max_pages_per_site=args.max_pages_per_site,
-        skip_live_audit=args.prospect_only,
-        artifact_dir=None if args.prospect_only else Path(args.output_dir).resolve() / "artifacts",
-    )
+    if args.reuse_report:
+        results = load_audit_results(Path(args.input))
+    else:
+        businesses = load_businesses(Path(args.input))
+        results = audit_businesses(
+            businesses,
+            user_agent=args.user_agent,
+            timeout_seconds=args.timeout_seconds,
+            max_pages_per_site=args.max_pages_per_site,
+            skip_live_audit=args.prospect_only,
+            artifact_dir=None if args.prospect_only else Path(args.output_dir).resolve() / "artifacts",
+        )
     output_dir = Path(args.output_dir)
     write_reports(results, output_dir)
 

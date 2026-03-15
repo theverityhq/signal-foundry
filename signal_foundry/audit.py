@@ -61,6 +61,61 @@ def load_businesses(input_csv: Path) -> list[Business]:
     return businesses
 
 
+def load_audit_results(input_csv: Path) -> list[AuditResult]:
+    with input_csv.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        results: list[AuditResult] = []
+        for row in reader:
+            results.append(
+                AuditResult(
+                    business_name=(row.get("business_name") or row.get("name") or "").strip(),
+                    category=(row.get("category") or "").strip(),
+                    website=(row.get("website") or "").strip(),
+                    phone=(row.get("phone") or "").strip(),
+                    address=(row.get("address") or "").strip(),
+                    city=(row.get("city") or "").strip(),
+                    prospect_fit=(row.get("prospect_fit") or "").strip() or "Needs Review",
+                    prospect_fit_score=_parse_int(row.get("prospect_fit_score"), default=0),
+                    status=(row.get("status") or "").strip() or "needs_manual_review",
+                    score=_parse_int(row.get("score"), default=0),
+                    schema_types_found=_split_csvish(row.get("schema_types_found")),
+                    missing_fields=_split_csvish(row.get("missing_fields")),
+                    opportunity_summary=(row.get("opportunity_summary") or "").strip(),
+                    recommended_type=(row.get("recommended_type") or "").strip(),
+                    recommended_jsonld=row.get("recommended_jsonld") or "",
+                    current_jsonld=row.get("current_jsonld") or "",
+                    schema_gap_summary=(row.get("schema_gap_summary") or "").strip(),
+                    recommendation_reasons=_split_piped(row.get("recommendation_reasons")),
+                    pages_scanned=_split_csvish(row.get("pages_scanned")),
+                    fetch_failures=_split_piped(row.get("fetch_failures")),
+                    artifact_paths=_split_piped(row.get("artifact_paths")),
+                    notes=_split_piped(row.get("notes")),
+                )
+            )
+    return results
+
+
+def _parse_int(value: str | None, *, default: int = 0) -> int:
+    try:
+        return int((value or "").strip())
+    except ValueError:
+        return default
+
+
+def _split_csvish(value: str | None) -> list[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _split_piped(value: str | None) -> list[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split("|") if item.strip()]
+
+
 def normalize_url(url: str) -> str:
     if not url:
         return ""
@@ -624,6 +679,7 @@ def write_reports(results: list[AuditResult], output_dir: Path) -> None:
     write_csv_report(results, output_dir / "audit-report.csv")
     write_markdown_report(results, output_dir / "audit-report.md")
     write_html_report(results, output_dir / "audit-report.html")
+    write_outreach_exports(results, output_dir)
 
 
 def write_json_report(results: list[AuditResult], path: Path) -> None:
@@ -716,6 +772,82 @@ def write_markdown_report(results: list[AuditResult], path: Path) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def write_outreach_exports(results: list[AuditResult], output_dir: Path, limit: int = 5) -> None:
+    candidates = select_outreach_candidates(results, limit=limit)
+    if not candidates:
+        return
+    write_outreach_csv(candidates, output_dir / "top-5-outreach.csv")
+    write_outreach_markdown(candidates, output_dir / "top-5-outreach.md")
+
+
+def select_outreach_candidates(results: list[AuditResult], *, limit: int = 5) -> list[AuditResult]:
+    verified = [result for result in results if result.status == "verified"]
+    pool = verified if verified else [result for result in results if result.status != "no_website"]
+    ranked = sorted(pool, key=_outreach_sort_key, reverse=True)
+    return ranked[:limit]
+
+
+def write_outreach_csv(results: list[AuditResult], path: Path) -> None:
+    fieldnames = [
+        "rank",
+        "business_name",
+        "category",
+        "city",
+        "website",
+        "phone",
+        "status",
+        "audit_score",
+        "outreach_score",
+        "outreach_tier",
+        "primary_gap",
+        "recommended_type",
+        "outreach_angle",
+        "recommendation_reasons",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for index, result in enumerate(results, start=1):
+            writer.writerow(
+                {
+                    "rank": index,
+                    "business_name": result.business_name,
+                    "category": result.category,
+                    "city": result.city,
+                    "website": result.website,
+                    "phone": result.phone,
+                    "status": _audit_status_label(result.status),
+                    "audit_score": result.score if result.status == "verified" else "",
+                    "outreach_score": _outreach_score(result),
+                    "outreach_tier": _outreach_tier(result),
+                    "primary_gap": _primary_gap(result),
+                    "recommended_type": result.recommended_type,
+                    "outreach_angle": _outreach_angle(result),
+                    "recommendation_reasons": " | ".join(result.recommendation_reasons),
+                }
+            )
+
+
+def write_outreach_markdown(results: list[AuditResult], path: Path) -> None:
+    lines = ["# Top Outreach Targets", ""]
+    for index, result in enumerate(results, start=1):
+        lines.append(f"## {index}. {result.business_name}")
+        lines.append(f"- Category: {result.category}")
+        lines.append(f"- City: {result.city}")
+        lines.append(f"- Website: {result.website}")
+        lines.append(f"- Phone: {result.phone or 'None'}")
+        lines.append(f"- Live audit: {_audit_status_label(result.status)}")
+        lines.append(f"- Audit score: {result.score if result.status == 'verified' else 'Not verified'}")
+        lines.append(f"- Outreach score: {_outreach_score(result)}")
+        lines.append(f"- Outreach tier: {_outreach_tier(result)}")
+        lines.append(f"- Primary gap: {_primary_gap(result)}")
+        lines.append(f"- Outreach angle: {_outreach_angle(result)}")
+        lines.append(f"- Recommended type: {result.recommended_type or 'None'}")
+        lines.append(f"- Recommendation reasons: {' | '.join(result.recommendation_reasons) or 'None'}")
+        lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def write_html_report(results: list[AuditResult], path: Path) -> None:
     total = len(results)
     verified = sum(1 for result in results if result.status == "verified")
@@ -727,8 +859,10 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
     )
     ranked_results = sorted(results, key=_lead_sort_key, reverse=True)
     tier_one = sum(1 for result in ranked_results if result.prospect_fit == "Good Fit")
-    cards = "\n".join(_render_result_card(result) for result in ranked_results)
-    spotlight = "\n".join(_render_spotlight_item(result) for result in ranked_results[:5])
+    outreach_candidates = select_outreach_candidates(results, limit=5)
+    outreach_lookup = {result.business_name: index for index, result in enumerate(outreach_candidates, start=1)}
+    cards = "\n".join(_render_result_card(result, outreach_rank=outreach_lookup.get(result.business_name)) for result in ranked_results)
+    spotlight = "\n".join(_render_spotlight_item(result, outreach_rank=index) for index, result in enumerate(outreach_candidates, start=1))
     html_document = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1159,7 +1293,7 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
     </section>
 
     <section class="spotlight">
-      <p class="spotlight-title">Best-Fit Targets First</p>
+      <p class="spotlight-title">Best Outreach Targets</p>
       <div class="spotlight-grid">
         {spotlight}
       </div>
@@ -1229,9 +1363,12 @@ def write_html_report(results: list[AuditResult], path: Path) -> None:
     path.write_text(html_document, encoding="utf-8")
 
 
-def _render_result_card(result: AuditResult) -> str:
+def _render_result_card(result: AuditResult, *, outreach_rank: int | None = None) -> str:
     lead_tags = _lead_tags(result)
     audit_status_label = _audit_status_label(result.status)
+    outreach_score = _outreach_score(result)
+    outreach_tier = _outreach_tier(result)
+    outreach_angle = _outreach_angle(result)
     search_text = " ".join(
         part
         for part in [
@@ -1248,6 +1385,8 @@ def _render_result_card(result: AuditResult) -> str:
             " ".join(lead_tags),
             result.prospect_fit,
             audit_status_label,
+            outreach_tier,
+            outreach_angle,
         ]
         if part
     )
@@ -1287,11 +1426,13 @@ def _render_result_card(result: AuditResult) -> str:
         <span class="chip">{city}</span>
         <span class="chip status-{html.escape(result.status)}">{html.escape(audit_status_label)}</span>
         <span class="chip">{html.escape(result.prospect_fit)}</span>
+        <span class="chip">{html.escape(outreach_tier)}</span>
+        {f'<span class="chip">Outreach #{outreach_rank}</span>' if outreach_rank else ''}
       </div>
     </div>
     <div class="score">
-      <span class="score-value">{result.prospect_fit_score}</span>
-      <span class="score-label">Prospect Fit</span>
+      <span class="score-value">{outreach_score}</span>
+      <span class="score-label">Outreach</span>
     </div>
   </div>
   <div class="details">
@@ -1316,11 +1457,19 @@ def _render_result_card(result: AuditResult) -> str:
       <div class="detail-value">{audit_score}</div>
     </div>
     <div class="detail">
+      <span class="detail-label">Prospect Fit</span>
+      <div class="detail-value">{result.prospect_fit_score}</div>
+    </div>
+    <div class="detail">
       <span class="detail-label">Recommended Type</span>
       <div class="detail-value">{html.escape(result.recommended_type or 'None')}</div>
     </div>
   </div>
   <div class="summary">{html.escape(result.opportunity_summary or 'No summary available.')}</div>
+  <div class="detail">
+    <span class="detail-label">Outreach Angle</span>
+    <div class="detail-value">{html.escape(outreach_angle)}</div>
+  </div>
   <div class="detail">
     <span class="detail-label">Schema Gap Summary</span>
     <div class="detail-value">{html.escape(result.schema_gap_summary or 'None')}</div>
@@ -1387,20 +1536,92 @@ def _render_artifact_links(paths: list[str]) -> str:
     )
 
 
-def _render_spotlight_item(result: AuditResult) -> str:
+def _render_spotlight_item(result: AuditResult, *, outreach_rank: int | None = None) -> str:
     fit = result.prospect_fit_score
     reason = ", ".join(_lead_tags(result)[:2]) or "Prospect fit"
     return (
         f'<div class="spotlight-item"><strong>{html.escape(result.business_name)}</strong>'
         f'<span>{html.escape(result.category)} in {html.escape(result.city or "Unknown")}</span>'
-        f'<span>{html.escape(result.prospect_fit)} | Prospect fit {fit}</span>'
-        f'<span>{html.escape(reason)}</span></div>'
+        f'<span>{html.escape(_outreach_tier(result))} | Outreach score {_outreach_score(result)}</span>'
+        f'<span>{"Outreach #" + str(outreach_rank) + " | " if outreach_rank else ""}{html.escape(reason)}</span></div>'
     )
 
 
 def _lead_sort_key(result: AuditResult) -> tuple[int, int, str]:
     verified_bonus = 1 if result.status == "verified" else 0
     return (result.prospect_fit_score, verified_bonus, result.score, result.business_name.lower())
+
+
+def _outreach_sort_key(result: AuditResult) -> tuple[int, int, int, str]:
+    verified_bonus = 1 if result.status == "verified" else 0
+    return (_outreach_score(result), verified_bonus, result.prospect_fit_score, result.business_name.lower())
+
+
+def _outreach_score(result: AuditResult) -> int:
+    score = 0
+    if result.status == "verified":
+        score += max(0, 100 - result.score)
+    elif result.status == "needs_manual_review":
+        score += 30
+
+    missing = set(result.missing_fields)
+    if "structured_data" in missing:
+        score += 32
+    if "local_business_schema" in missing:
+        score += 22
+    if "menu_schema" in missing:
+        score += 10
+    if "service_schema" in missing:
+        score += 10
+    if "product_schema" in missing:
+        score += 8
+    if result.prospect_fit == "Good Fit":
+        score += 12
+    elif result.prospect_fit == "Needs Review":
+        score += 6
+    return min(200, score)
+
+
+def _outreach_tier(result: AuditResult) -> str:
+    score = _outreach_score(result)
+    if score >= 110:
+        return "Best First"
+    if score >= 70:
+        return "Strong Pitch"
+    if score >= 35:
+        return "Secondary"
+    return "Low Priority"
+
+
+def _primary_gap(result: AuditResult) -> str:
+    missing = set(result.missing_fields)
+    if "structured_data" in missing:
+        return "No JSON-LD detected"
+    if "local_business_schema" in missing:
+        return "Wrong or missing local business type"
+    if "menu_schema" in missing:
+        return "Menu/service content lacks schema"
+    if "service_schema" in missing:
+        return "Service content lacks schema"
+    if "product_schema" in missing:
+        return "Product content lacks schema"
+    if result.status == "needs_manual_review":
+        return "Needs live verification"
+    return "Smaller cleanup opportunity"
+
+
+def _outreach_angle(result: AuditResult) -> str:
+    primary_gap = _primary_gap(result)
+    category = result.category or "business"
+    if primary_gap == "No JSON-LD detected":
+        return f"This {category.lower()} site appears to have no machine-readable schema, so the pitch is a clean before-and-after visibility fix."
+    if primary_gap == "Wrong or missing local business type":
+        return f"This {category.lower()} already has some schema, but it is not clearly typed for its local business category."
+    if "lacks schema" in primary_gap:
+        return f"This {category.lower()} has content that search engines can read visually, but not enough schema to understand it cleanly."
+    if primary_gap == "Needs live verification":
+        return f"This {category.lower()} looks like a strong prospect, but the pitch should wait until the site is manually verified."
+    return f"This {category.lower()} looks mostly solid; the angle is standardization and strengthening rather than a major fix."
 
 
 def _lead_tags(result: AuditResult) -> list[str]:
